@@ -5,14 +5,21 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analyzer, compare as compare_mod, database, licenses, reviews as reviews_mod
+from . import (
+    analyzer,
+    compare as compare_mod,
+    database,
+    licenses,
+    retire as retire_mod,
+    reviews as reviews_mod,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SAMPLE_PATH = STATIC_DIR / "examples" / "sample-manifest.json"
@@ -52,6 +59,17 @@ class ReviewCreateRequest(BaseModel):
     note: str = Field("", description="复核备注（可选）")
     expires_at: Optional[str] = Field(
         None, description="标记失效时间（ISO 8601 或 YYYY-MM-DD；留空则长期有效）"
+    )
+
+
+class RetireRequest(BaseModel):
+    retire: List[str] = Field(
+        ...,
+        description=(
+            "拟模拟退役的根包 id（name@version）列表；"
+            "空数组表示不退役任何根包（基线）。重复选择或含非根包将返回 422，"
+            "退役全部根包返回 400。"
+        ),
     )
 
 
@@ -125,6 +143,39 @@ def compare_audits(base_id: int, target_id: int) -> Dict[str, Any]:
     base_result = database.get_audit(base_id)
     target_result = database.get_audit(target_id)
     return compare_mod.compare_audits(base_result, target_result)
+
+
+@app.get(
+    "/api/audits/{audit_id}/roots",
+    tags=["retire"],
+    summary="列出审计的根包（没有入边的包）及各根包的可达影响面",
+)
+def list_root_packages(audit_id: int) -> Dict[str, Any]:
+    result = database.get_audit(audit_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="审计记录不存在：#%s。根包退役预演为只读操作，不会创建新审计。" % audit_id,
+        )
+    return retire_mod.roots_overview(result)
+
+
+@app.post(
+    "/api/audits/{audit_id}/retire",
+    tags=["retire"],
+    summary="根包退役预演（只读）：从剩余根包重算可达集合",
+)
+def retire_root_packages(audit_id: int, payload: RetireRequest) -> Dict[str, Any]:
+    result = database.get_audit(audit_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="审计记录不存在：#%s。根包退役预演为只读操作，不会创建新审计。" % audit_id,
+        )
+    try:
+        return retire_mod.simulate_retirement(result, payload.retire, audit_id)
+    except retire_mod.RetireError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
 
 
 @app.get("/api/audits/{audit_id}", tags=["audit"], summary="获取某次审计结果（支持按包筛选/导出）")

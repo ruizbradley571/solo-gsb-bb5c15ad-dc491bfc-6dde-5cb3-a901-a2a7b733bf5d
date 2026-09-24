@@ -24,6 +24,12 @@ manifest（或直接上传 **CycloneDX JSON** SBOM），系统会：
    均自动识别 CycloneDX JSON（`bomFormat` + `components` + `dependencies`）：
    组件的 `bom-ref` 映射为包节点，按 `ref` / `dependsOn` 还原依赖边后复用同一套
    兼容矩阵与最短路径冲突分析；审计结果照常进入历史列表并可导出。
+9. **根包退役预演（只读）** —— 在历史审计上选择一个或多个**根包**
+   （定义为没有入边、即没有其他包依赖它的包）模拟退役；服务端沿
+   「使用方 → 被依赖方」的边从**剩余根包**重算可达集合，列出因退役失去可达性的包、
+   仍被其他根包共用而保留的包，以及随失联包一起消失的许可证冲突/告警与其原最短路径。
+   预演不创建审计、不改动复核标记，可反复调整选择；不存在的审计（404）、非根包/重复
+   选择（422）与退役全部根包（400）均返回明确错误。原生 manifest 与 CycloneDX 审计均可使用。
 
 ## 快速开始（Docker Compose，一键启动，推荐）
 
@@ -40,7 +46,7 @@ docker compose up --build          # 前台启动（加 -d 可后台运行）
 
 | 地址 | 说明 |
 | --- | --- |
-| <http://localhost:8000/> | 网页界面（已自动载入示例 manifest，可一键切换 CycloneDX 示例；第 2 节可选择两次历史审计进行对比） |
+| <http://localhost:8000/> | 网页界面（已自动载入示例 manifest，可一键切换 CycloneDX 示例；第 2 节可选择两次历史审计进行对比，第 3 节可对历史审计做根包退役预演） |
 | <http://localhost:8000/docs> | Swagger 风格交互式 JSON API 文档 |
 | <http://localhost:8000/redoc> | ReDoc API 文档 |
 | <http://localhost:8000/api/matrix> | 许可证兼容矩阵（机器可读） |
@@ -185,6 +191,8 @@ $ curl -s -X POST http://localhost:8000/api/audit -H "Content-Type: application/
 | GET | `/api/audits/{id}` | 获取审计结果；`?package=xxx` 按包筛选 |
 | GET | `/api/audits/{id}?download=true&package=xxx` | 导出（筛选后的）JSON 文件 |
 | GET | `/api/audits/compare/{base_id}/{target_id}` | **两次审计对比**（只读，不写入） |
+| GET | `/api/audits/{id}/roots` | 列出审计的**根包**（无入边的包）及各根包可达影响面 |
+| POST | `/api/audits/{id}/retire` | **根包退役预演**（只读）：`{"retire": ["根包@版本", ...]}` |
 | DELETE | `/api/audits/{id}` | 删除审计记录（不影响复核标记） |
 | POST | `/api/reviews` | **创建复核标记**（按审计中的冲突条目，跨审计生效） |
 | GET | `/api/reviews?state=active&fingerprint=…` | 复核标记记录列表（可按状态/指纹筛选） |
@@ -238,6 +246,79 @@ HTTP/1.1 400 Bad Request
 网页端在首页第 2 节「历史审计 · 两次对比」选择两条记录后点击对比即可：
 结果按新增 / 消失 / 变化分组，变化项会用 `硬冲突 → 告警` 这类徽标展示严重程度翻转，
 并同时渲染双方的最短依赖路径（红色=基准，绿色=目标），折叠区可查看全部节点配对明细。
+
+### 根包退役预演接口（只读）
+
+**根包**定义为依赖图中没有入边（没有任何「使用方」指向它）的包，即依赖图上的
+可达性起点（孤立节点没有入边，本身也算根包；纯环上的节点都有入边，不是根包）。
+
+先取某条审计的根包清单，再提交一组拟退役的根包 id 做模拟（空数组为基线）：
+
+```bash
+curl http://localhost:8000/api/audits/1/roots
+curl -X POST http://localhost:8000/api/audits/1/retire \
+  -H "Content-Type: application/json" \
+  -d '{"retire": []}'
+```
+
+> 注：根包是“没有入边”的包。内置示例 manifest / CycloneDX BOM 都只有一个顶层
+> 根包（分别为 `web-app@2.1.0` 与 `shop-backend@3.2.0`）；要体验多根退役，可
+> 上传含多个无入边顶层包（或含孤立节点）的 manifest，例如再加入一个不被任何包
+> 依赖的独立组件。
+
+服务端沿 **使用方 → 被依赖方** 的边，只从**剩余根包**重新做 BFS 可达性计算，返回：
+
+- `retired_roots` —— 本次模拟退役的根包；
+- `lost_packages` —— 退役后失去可达性的包（含各自的 `former_root_packages`
+  原可达根包）；
+- `shared_packages` —— 原本同时被某个退役根包与某个剩余根包引用、退役后仍可达
+  的包（分别列出退役/剩余两侧的根包）；
+- `orphan_packages` —— 原图中就不被任何根包可达的节点（仅可能出现在纯环组件上）；
+- `vanished_conflicts` —— 随失联包（含退役根本身）一起消失的许可证冲突/告警，
+  每条保留**原最短路径** `path`，并用 `path_status` 标出路径上每个节点退役后的
+  可达性、`first_lost_node`（首个失联节点）与 `vanish_reason`（消失原因）；
+- `remaining_conflicts` —— 退役后仍然存在的冲突/告警（祖先与被依赖节点均仍可达）；
+- `summary` —— 可达节点数（退役前 → 后）、失联/共用包数、消失/保留冲突数
+  （含硬冲突分项）。
+
+预演是**纯只读**计算：不创建审计记录、不写数据库、不附着或改动任何复核标记，
+同一条审计可反复调整选择。错误均带明确说明：
+
+```bash
+$ curl -i http://localhost:8000/api/audits/999/retire -H "Content-Type: application/json" -d '{"retire":[]}'
+HTTP/1.1 404 Not Found
+{"detail":"审计记录不存在：#999。根包退役预演为只读操作，不会创建新审计。"}
+
+# 单根审计（如内置示例，唯一根包为 web-app@2.1.0）上直接退役该根包：
+$ curl -i -X POST http://localhost:8000/api/audits/1/retire -H "Content-Type: application/json" \
+    -d '{"retire":["web-app@2.1.0"]}'
+HTTP/1.1 400 Bad Request
+{"detail":"不能退役全部 1 个根包：退役后将没有任何根包可供重算可达集合，请至少保留一个根包。"}
+
+# pdf-export 被 billing-core 依赖（有入边），不是根包：
+$ curl -i -X POST http://localhost:8000/api/audits/1/retire -H "Content-Type: application/json" \
+    -d '{"retire":["pdf-export@4.0.0"]}'
+HTTP/1.1 422 Unprocessable Entity
+{"detail":"以下包不是根包（存在入边，即仍被其他包依赖），不能作为退役对象：pdf-export@4.0.0。根包定义为没有入边的包。"}
+
+# 多根审计上重复勾选同一个根包：
+$ curl -i -X POST http://localhost:8000/api/audits/7/retire -H "Content-Type: application/json" \
+    -d '{"retire":["svc-a@1.0.0","svc-a@1.0.0"]}'
+HTTP/1.1 422 Unprocessable Entity
+{"detail":"退役选择存在重复的根包：svc-a@1.0.0。请去掉重复勾选后重试。"}
+
+# 多根审计上一次性退役全部根包：
+$ curl -i -X POST http://localhost:8000/api/audits/7/retire -H "Content-Type: application/json" \
+    -d '{"retire":["svc-a@1.0.0","svc-b@2.0.0"]}'
+HTTP/1.1 400 Bad Request
+{"detail":"不能退役全部 2 个根包：退役后将没有任何根包可供重算可达集合，请至少保留一个根包。"}
+```
+
+`retire` 传空数组 `[]` 表示不退役任何根包，返回原始审计基线，便于网页初始展示与
+反复对照。网页端在首页第 3 节「根包退役预演」选择历史审计后勾选根包即可：
+根包会展开各自的可达下游包提示影响面，预演结果分组展示失联包（红）、共用包（绿）、
+消失冲突（原最短路径上失联节点划线标注）与仍存在冲突；原生 manifest 与 CycloneDX
+审计结果同样支持（CycloneDX 审计会带 `CycloneDX BOM` 标识）。
 
 ### 跨审计复核标记接口
 
@@ -294,7 +375,7 @@ curl http://localhost:8000/api/reviews/1                          # 单条记录
 curl -X POST http://localhost:8000/api/reviews/1/revoke           # 撤销（保留记录，条目回到待复核）
 ```
 
-网页端在第 4 节每条冲突卡片上直接展示「待复核 / 已复核」徽标：待复核条目可填写
+网页端在第 5 节每条冲突卡片上直接展示「待复核 / 已复核」徽标：待复核条目可填写
 复核备注与失效时间后一键打标，已复核条目显示备注、失效时间并提供「撤销标记」按钮，
 操作后列表自动刷新。删除审计记录不会删除复核标记（标记按指纹跨审计生效）。
 
@@ -355,17 +436,18 @@ CycloneDX 导入的审计结果结构相同，另带 `"source_format": "cycloned
 ```
 .
 ├── app/
-│   ├── main.py        # FastAPI 路由（JSON API + 网页，含两次审计对比与复核标记接口）
+│   ├── main.py        # FastAPI 路由（JSON API + 网页，含两次审计对比、复核标记与根包退役预演接口）
 │   ├── analyzer.py    # manifest 解析、节点规范化、传递约束、最短路径（自动路由 CycloneDX）
 │   ├── cyclonedx.py   # CycloneDX JSON 导入：bom-ref 映射节点、ref/dependsOn 还原依赖边
 │   ├── compare.py     # 两次审计对比：节点/冲突配对与变化检测（纯只读）
+│   ├── retire.py      # 根包退役预演：根包识别、剩余根包可达集重算、失联/共用包与消失冲突（纯只读）
 │   ├── reviews.py     # 复核标记：指纹计算、失效时间规范化、审计结果附着
 │   ├── licenses.py    # 许可证别名规范化与兼容矩阵
 │   └── database.py    # SQLite 初始化与审计记录/复核标记持久化
 ├── static/
 │   ├── index.html     # 单文件网页（无外部 CDN 依赖）
 │   └── examples/      # sample-manifest.json 与 sample-cyclonedx.json 两个内置示例
-├── tests/             # 轻量自测：python -m tests.test_analyzer / test_compare / test_reviews / test_cyclonedx
+├── tests/             # 轻量自测：python -m tests.test_analyzer / test_compare / test_reviews / test_cyclonedx / test_retire
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt

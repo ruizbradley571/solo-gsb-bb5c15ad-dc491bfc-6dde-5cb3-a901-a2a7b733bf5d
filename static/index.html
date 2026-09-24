@@ -119,6 +119,34 @@
   }
   .review-box button { padding: 6px 12px; font-size: 12px; }
   .review-box .note { flex: 1 1 100%; }
+  /* 根包退役预演 */
+  .root-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+  .root-item {
+    display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fcfdff;
+  }
+  .root-item input { margin-top: 3px; }
+  .root-item .root-main { flex: 1 1 320px; }
+  .root-item .root-id { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; }
+  .root-item .root-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .pkg-chip {
+    display: inline-block; font-size: 11px; padding: 1px 8px; margin: 2px 4px 2px 0;
+    border-radius: 999px; font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .pkg-chip.lost { background: var(--err-bg); color: var(--err); }
+  .pkg-chip.shared { background: var(--ok-bg); color: var(--ok); }
+  .pkg-chip.retired { background: #eceff4; color: var(--muted); text-decoration: line-through; }
+  .pkg-chip.orphan { background: #f3ecfd; color: #6b32b8; }
+  .pkg-chip.small { font-size: 10.5px; background: #eef2f8; color: var(--muted); }
+  .rehearsal-grid { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+  .pkg-group { flex: 1 1 300px; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .pkg-group h3 { margin: 0 0 8px; font-size: 13px; }
+  .pkg-group.lost { border-left: 4px solid var(--err); }
+  .pkg-group.shared { border-left: 4px solid var(--ok); }
+  .pkg-group.orphan { border-left: 4px solid #6b32b8; }
+  .path .node-lost { color: var(--err); font-weight: 700; text-decoration: line-through; }
+  .path .node-ok b { color: var(--ok); }
+  .vanish-note { font-size: 12px; color: var(--err); margin: 4px 0 6px; }
 </style>
 </head>
 <body>
@@ -163,10 +191,36 @@
     <div id="compare-result" class="hidden-block" style="margin-top:18px;"></div>
   </section>
 
+  <section class="card" id="retire-card">
+    <h2>3. 根包退役预演（只读模拟，不落库）</h2>
+    <div id="retire-alert" class="alert"></div>
+    <div class="row">
+      <select id="retire-audit"></select>
+      <button id="btn-retire-load">载入该审计的根包</button>
+      <button class="secondary" id="btn-retire-refresh">刷新列表</button>
+    </div>
+    <div class="hint" style="margin-top:8px;">
+      <b>根包</b>指依赖图中没有入边（没有其他包依赖它）的包。勾选一个或多个根包模拟退役后，
+      服务端沿「使用方 → 被依赖方」的边从<b>剩余根包</b>重算可达集合：
+      列出因退役失去可达性的包、仍被其他根包共用而保留的包，以及随失联包一起消失的许可证冲突与原最短路径。
+      预演为<b>纯只读</b>操作——不会创建审计、不会改动复核标记，可反复调整勾选。
+    </div>
+    <div id="retire-panel" class="hidden-block" style="margin-top:14px;">
+      <div class="meta-line" id="retire-meta"></div>
+      <div class="root-list" id="retire-roots"></div>
+      <div class="row">
+        <button id="btn-retire-run">▶ 执行退役预演</button>
+        <button class="secondary" id="btn-retire-clear">清除全部勾选</button>
+        <span class="hint">可反复调整选择；至少保留一个根包（退役全部根包将返回错误）。</span>
+      </div>
+      <div id="retire-result" class="hidden-block" style="margin-top:18px;"></div>
+    </div>
+  </section>
+
   <section id="result" class="hidden-block">
     <div class="card">
       <div class="row" style="justify-content:space-between;">
-        <h2 style="margin:0;">3. 审计结果 <span id="r-name" class="muted" style="font-weight:400;font-size:13px;"></span></h2>
+        <h2 style="margin:0;">4. 审计结果 <span id="r-name" class="muted" style="font-weight:400;font-size:13px;"></span></h2>
         <span id="r-status"></span>
       </div>
       <div class="stats" style="margin-top:14px;">
@@ -187,7 +241,7 @@
     </div>
 
     <div class="card">
-      <h2>4. 冲突与最短依赖路径 <span id="review-stats" class="pill" style="font-weight:400;"></span></h2>
+      <h2>5. 冲突与最短依赖路径 <span id="review-stats" class="pill" style="font-weight:400;"></span></h2>
       <div id="review-alert" class="alert"></div>
       <div class="hint" style="margin-bottom:10px;">
         复核标记按「祖先节点 + 被依赖节点 + 双方规范化许可证」生成指纹，跨审计生效：
@@ -197,7 +251,7 @@
     </div>
 
     <div class="card">
-      <h2>5. 节点与传递约束</h2>
+      <h2>6. 节点与传递约束</h2>
       <div style="overflow-x:auto;">
       <table id="nodes-table">
         <thead><tr><th>节点</th><th>版本</th><th>许可证</th><th>约束来源（传递）</th><th>硬冲突</th></tr></thead>
@@ -207,7 +261,7 @@
     </div>
 
     <div class="card">
-      <h2>6. 告警与未解析依赖</h2>
+      <h2>7. 告警与未解析依赖</h2>
       <div id="warnings"></div>
     </div>
   </section>
@@ -521,6 +575,8 @@ async function loadAuditList() {
   fill($("cmp-target"), prev.target || (items.length > 1 ? String(items[1].id) : ""));
   // 首次加载默认选最新两条（列表为倒序：items[0] 最新）
   if (!prev.base && items.length) $("cmp-base").value = String(items[0].id);
+  retireAuditItems = items;
+  if ($("retire-audit")) fillRetireSelect($("retire-audit").value);
   return items;
 }
 
@@ -658,6 +714,217 @@ $("btn-compare").addEventListener("click", async () => {
 });
 
 $("btn-refresh-audits").addEventListener("click", loadAuditList);
+
+// --- 根包退役预演（只读） ------------------------------------------------------
+
+let retireAuditItems = [];
+let retireRootsData = null;
+
+function showRetireAlert(msg) {
+  const el = $("retire-alert");
+  el.textContent = msg;
+  el.className = "alert error show";
+}
+function clearRetireAlert() { $("retire-alert").className = "alert"; }
+
+function fillRetireSelect(selected) {
+  const sel = $("retire-audit");
+  sel.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = retireAuditItems.length
+    ? "请选择审计记录…"
+    : "（暂无历史审计，请先在上方执行一次审计）";
+  sel.appendChild(placeholder);
+  retireAuditItems.forEach((a) => {
+    const opt = document.createElement("option");
+    opt.value = String(a.id);
+    opt.textContent = "#" + a.id + " · " + a.name + " · " + STATUS_LABEL[a.status] +
+      (a.conflict_count ? "（" + a.conflict_count + " 硬冲突）" : "") + " · " + (a.created_at || "");
+    sel.appendChild(opt);
+  });
+  if (selected && retireAuditItems.some((a) => String(a.id) === selected)) sel.value = selected;
+}
+
+function renderRootList(data) {
+  retireRootsData = data;
+  $("retire-panel").className = "";
+  const s = data.summary;
+  const srcTag = data.source_format === "cyclonedx"
+    ? ' <span class="pill">CycloneDX BOM</span>' : "";
+  $("retire-meta").innerHTML =
+    "审计 <span class='mono'>#" + esc(String(data.audit_id)) + " · " +
+    esc(data.manifest_name || "") + "</span>" + srcTag +
+    ' · <b>' + s.root_packages + "</b> 个根包 · 共 " + s.packages +
+    " 个节点、" + s.edges + " 条边（可达 " + s.reachable_packages +
+    (s.unreachable_packages ? "，孤立环上 " + s.unreachable_packages + " 个节点不被任何根包可达）" : "") + "）";
+  const box = $("retire-roots");
+  if (!data.roots.length) {
+    box.innerHTML = '<p class="muted">该审计的依赖图中没有根包（所有节点都有入边，通常意味着图只由环构成），无法进行退役预演。</p>';
+    return;
+  }
+  box.innerHTML = data.roots.map((r) => {
+    const deps = r.reachable_packages.length
+      ? r.reachable_packages.map((d) => '<span class="pkg-chip small">' + esc(d) + "</span>").join("")
+      : '<span class="muted">（无下游包）</span>';
+    const lic = r.license_display
+      ? ' <span class="badge ' + catClass(r.license_category) + '">' + esc(r.license_display) + "</span>"
+      : "";
+    return '<label class="root-item">' +
+      '<input type="checkbox" class="retire-check" value="' + esc(r.id) + '">' +
+      '<span class="root-main"><span class="root-id">' + esc(r.id) + "</span>" + lic +
+      '<div class="root-meta">可达子图：下游 ' + r.reachable_packages.length +
+      " 个包（含自身共 " + r.reachable_count + " 个可达节点）</div>" +
+      '<div style="margin-top:4px;">' + deps + "</div></span></label>";
+  }).join("");
+}
+
+function renderRehearsalPath(pathStatus, fallbackPath) {
+  const items = (pathStatus && pathStatus.path) || (fallbackPath || []).map((id) => ({ id, reachable: null }));
+  return items.map((p) => {
+    const cls = p.reachable === false ? "node-lost" : (p.reachable === true ? "node-ok" : "");
+    return '<b class="' + cls + '">' + esc(p.id) + "</b>";
+  }).join('<span class="arrow">→</span>');
+}
+
+function renderConflictMini(c, vanished) {
+  const badge = c.severity === "error"
+    ? '<span class="badge conflict">硬冲突</span>'
+    : '<span class="badge warning">需人工确认</span>';
+  const head = '<div class="head">' + badge +
+    ' <span class="mono"><b>' + esc(c.ancestor) + '</b> ── ' + esc(c.ancestor_license) +
+    " → " + esc(c.node_license) + ' ── <b>' + esc(c.node) + "</b></span>" +
+    ' <span class="pill">' + c.id + " · 原最短路径 " + c.distance + " 跳</span></div>";
+  const reason = c.reason ? '<div class="reason">' + esc(c.reason) + "</div>" : "";
+  const note = vanished && c.vanish_reason
+    ? '<div class="vanish-note">消失原因：' + esc(c.vanish_reason) + "</div>" : "";
+  const path = '<div class="path-label"><span class="tag ' + (vanished ? "base" : "target") + '">' +
+    (vanished ? "原最短路径（失联节点划掉）" : "最短依赖路径") + "</span></div>" +
+    '<div class="path">' + renderRehearsalPath(c.path_status, c.path) + "</div>";
+  return '<div class="conflict ' + (c.severity === "error" ? "error" : "warning") + '">' +
+    head + reason + note + path + "</div>";
+}
+
+function pkgGroup(cls, title, list, extra) {
+  if (!list.length) return "";
+  return '<div class="pkg-group ' + cls + '"><h3>' + esc(title) +
+    ' <span class="pill">' + list.length + "</span></h3>" + list.map(extra).join("") + "</div>";
+}
+
+function renderRetireResult(data) {
+  const s = data.summary;
+  let html = '<div class="stats">' +
+    '<div class="stat"><div class="num" style="color:var(--err)">' + s.lost_packages + '</div><div class="label">失去可达性的包</div></div>' +
+    '<div class="stat"><div class="num" style="color:var(--ok)">' + s.shared_packages + '</div><div class="label">仍被其他根包共用</div></div>' +
+    '<div class="stat"><div class="num diff-remove">−' + s.conflicts_vanished + '</div><div class="label">消失冲突/告警（硬冲突 ' + s.conflicts_vanished_errors + "）</div></div>" +
+    '<div class="stat"><div class="num">' + s.conflicts_remaining + '</div><div class="label">仍存在冲突/告警（硬冲突 ' + s.conflicts_remaining_errors + "）</div></div>" +
+    '<div class="stat"><div class="num">' + s.reachable_before + " → " + s.reachable_after + '</div><div class="label">可达节点数（退役前 → 后）</div></div>' +
+    "</div>";
+
+  if (data.retired_roots.length) {
+    html += '<div style="margin:6px 0 2px;"><b>本次模拟退役的根包：</b></div><div>' +
+      data.retired_roots.map((p) =>
+        '<span class="pkg-chip retired">' + esc(p.id) +
+        (p.license_display ? " · " + esc(p.license_display) : "") + "</span>").join("") +
+      '<div class="hint" style="margin-top:4px;">剩余根包：' +
+      (data.selection.remaining_root_packages.length
+        ? data.selection.remaining_root_packages.map((r) => '<span class="pkg-chip small">' + esc(r) + "</span>").join("")
+        : "（无）") + "</div></div>";
+  } else {
+    html += '<p class="hint" style="margin-top:8px;">当前未退役任何根包，以下为原始审计基线。勾选上方根包后再次执行预演即可对比变化。</p>';
+  }
+
+  html += '<div class="rehearsal-grid">' +
+    pkgGroup("lost", "❌ 因退役失去可达性的包", data.lost_packages, (p) =>
+      '<div style="margin-bottom:8px;"><span class="pkg-chip lost">' + esc(p.id) + "</span>" +
+      (p.license_display ? ' <span class="badge ' + catClass(p.license_category) + '">' + esc(p.license_display) + "</span>" : "") +
+      '<div class="root-meta">原可达自：' +
+      (p.former_root_packages.length ? p.former_root_packages.map((r) => '<span class="pkg-chip small">' + esc(r) + "</span>").join("") : "—") +
+      "</div></div>") +
+    pkgGroup("shared", "🤝 仍被其他根包共用的包", data.shared_packages, (p) =>
+      '<div style="margin-bottom:8px;"><span class="pkg-chip shared">' + esc(p.id) + "</span>" +
+      (p.license_display ? ' <span class="badge ' + catClass(p.license_category) + '">' + esc(p.license_display) + "</span>" : "") +
+      '<div class="root-meta">退役根：' +
+      (p.retired_root_packages.length ? p.retired_root_packages.map((r) => '<span class="pkg-chip retired">' + esc(r) + "</span>").join("") : "—") +
+      '<br>仍由剩余根保留：' +
+      (p.remaining_root_packages.length ? p.remaining_root_packages.map((r) => '<span class="pkg-chip small">' + esc(r) + "</span>").join("") : "—") +
+      "</div></div>") +
+    pkgGroup("orphan", "🔌 本就不被任何根包可达的节点", data.orphan_packages, (p) =>
+      '<span class="pkg-chip orphan">' + esc(p.id) + "</span>") +
+    "</div>";
+
+  html += "<h3 style='margin:16px 0 8px;font-size:14px;'>🚫 随失联包消失的冲突/告警（" +
+    data.vanished_conflicts.length + "）</h3>";
+  html += data.vanished_conflicts.length
+    ? data.vanished_conflicts.map((c) => renderConflictMini(c, true)).join("")
+    : '<p class="muted">没有冲突或告警因本次退役而消失。</p>';
+
+  if (data.remaining_conflicts.length) {
+    html += '<details style="margin-top:14px;"><summary>仍存在的冲突/告警（' +
+      data.remaining_conflicts.length + "，折叠查看）</summary>" +
+      '<div style="margin-top:8px;">' +
+      data.remaining_conflicts.map((c) => renderConflictMini(c, false)).join("") +
+      "</div></details>";
+  }
+
+  html += '<p class="hint" style="margin-top:14px;">预演为纯只读模拟：未创建审计记录、未改动任何复核标记；' +
+    "调整上方勾选后可再次执行。</p>";
+
+  $("retire-result").innerHTML = html;
+  $("retire-result").className = "";
+}
+
+async function loadRootsForRetire() {
+  clearRetireAlert();
+  const id = $("retire-audit").value;
+  if (!id) { showRetireAlert("请先选择一条历史审计。"); return; }
+  $("btn-retire-load").disabled = true;
+  try {
+    const resp = await fetch("/api/audits/" + id + "/roots");
+    const data = await resp.json();
+    if (!resp.ok) { showRetireAlert(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)); return; }
+    renderRootList(data);
+    $("retire-result").className = "hidden-block";
+    $("retire-result").innerHTML = "";
+    if (data.roots.length) await runRetirement(); // 载入后先跑一次空选择基线，便于对照后续勾选
+  } catch (e) {
+    showRetireAlert("加载根包失败：" + e.message);
+  } finally {
+    $("btn-retire-load").disabled = false;
+  }
+}
+
+async function runRetirement() {
+  clearRetireAlert();
+  if (!retireRootsData) { showRetireAlert("请先载入某条审计的根包。"); return; }
+  const retired = Array.from(document.querySelectorAll(".retire-check:checked")).map((c) => c.value);
+  $("btn-retire-run").disabled = true;
+  try {
+    const resp = await fetch("/api/audits/" + retireRootsData.audit_id + "/retire", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retire: retired }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      showRetireAlert(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+      return;
+    }
+    renderRetireResult(data);
+  } catch (e) {
+    showRetireAlert("退役预演请求失败：" + e.message);
+  } finally {
+    $("btn-retire-run").disabled = false;
+  }
+}
+
+$("btn-retire-load").addEventListener("click", loadRootsForRetire);
+$("btn-retire-refresh").addEventListener("click", loadAuditList);
+$("retire-audit").addEventListener("change", loadRootsForRetire);
+$("btn-retire-run").addEventListener("click", runRetirement);
+$("btn-retire-clear").addEventListener("click", () => {
+  document.querySelectorAll(".retire-check").forEach((c) => { c.checked = false; });
+});
 
 // 自动载入示例，便于首次访问
 $("btn-sample").click();
