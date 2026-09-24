@@ -5,14 +5,21 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analyzer, compare as compare_mod, database, licenses, reviews as reviews_mod
+from . import (
+    analyzer,
+    compare as compare_mod,
+    database,
+    licenses,
+    retire as retire_mod,
+    reviews as reviews_mod,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SAMPLE_PATH = STATIC_DIR / "examples" / "sample-manifest.json"
@@ -125,6 +132,33 @@ def compare_audits(base_id: int, target_id: int) -> Dict[str, Any]:
     base_result = database.get_audit(base_id)
     target_result = database.get_audit(target_id)
     return compare_mod.compare_audits(base_result, target_result)
+
+
+@app.get(
+    "/api/audits/{audit_id}/retire",
+    tags=["audit"],
+    summary="根包退役预演（只读）：从剩余根包重算可达集合",
+)
+def retire_rehearsal(
+    audit_id: int,
+    retire: Optional[List[str]] = Query(
+        None,
+        description="要模拟退役的根包 id（name@version），可重复或逗号分隔；留空则仅返回根包列表",
+    ),
+) -> Dict[str, Any]:
+    result = database.get_audit(audit_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="审计记录不存在：%s。退役预演为只读操作，不会创建新审计。" % audit_id,
+        )
+    retire_ids: List[str] = []
+    for item in retire or []:
+        retire_ids.extend(part.strip() for part in str(item).split(",") if part.strip())
+    try:
+        return retire_mod.rehearse_retirement(result, retire_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.get("/api/audits/{audit_id}", tags=["audit"], summary="获取某次审计结果（支持按包筛选/导出）")

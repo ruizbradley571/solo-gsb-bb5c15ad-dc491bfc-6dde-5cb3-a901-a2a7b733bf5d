@@ -23,7 +23,14 @@ manifest（或直接上传 **CycloneDX JSON** SBOM），系统会：
 8. **CycloneDX SBOM 导入** —— 网页粘贴/上传与 `POST /api/audit`、`/api/audit/upload`
    均自动识别 CycloneDX JSON（`bomFormat` + `components` + `dependencies`）：
    组件的 `bom-ref` 映射为包节点，按 `ref` / `dependsOn` 还原依赖边后复用同一套
-   兼容矩阵与最短路径冲突分析；审计结果照常进入历史列表并可导出。
+   兼容矩阵与最短路径冲突分析；审计结果照常进入历史列表并可导出；
+9. **根包退役预演** —— 根包即**没有入边的包**（没有任何其他包依赖它）。在网页第 3 节
+   选择一条已保存审计并勾选一个或多个根包（或调用
+   `GET /api/audits/{id}/retire?retire=…`），服务端沿 使用方 → 被依赖方 的边从
+   剩余根包重算可达集合，展示因退役失去可达性的包、仍被其他根包共用的包，
+   以及随失联包消失的许可证冲突（附原最短路径）；预演为纯只读操作，
+   **不创建审计、不改动复核标记**，原生 manifest 与 CycloneDX 审计均可使用，
+   可反复调整选择。
 
 ## 快速开始（Docker Compose，一键启动，推荐）
 
@@ -40,7 +47,7 @@ docker compose up --build          # 前台启动（加 -d 可后台运行）
 
 | 地址 | 说明 |
 | --- | --- |
-| <http://localhost:8000/> | 网页界面（已自动载入示例 manifest，可一键切换 CycloneDX 示例；第 2 节可选择两次历史审计进行对比） |
+| <http://localhost:8000/> | 网页界面（已自动载入示例 manifest，可一键切换 CycloneDX 示例；第 2 节可对比两次历史审计，第 3 节可做根包退役预演） |
 | <http://localhost:8000/docs> | Swagger 风格交互式 JSON API 文档 |
 | <http://localhost:8000/redoc> | ReDoc API 文档 |
 | <http://localhost:8000/api/matrix> | 许可证兼容矩阵（机器可读） |
@@ -185,6 +192,7 @@ $ curl -s -X POST http://localhost:8000/api/audit -H "Content-Type: application/
 | GET | `/api/audits/{id}` | 获取审计结果；`?package=xxx` 按包筛选 |
 | GET | `/api/audits/{id}?download=true&package=xxx` | 导出（筛选后的）JSON 文件 |
 | GET | `/api/audits/compare/{base_id}/{target_id}` | **两次审计对比**（只读，不写入） |
+| GET | `/api/audits/{id}/retire?retire=a@1&retire=b@2` | **根包退役预演**（只读；不带参数返回根包列表） |
 | DELETE | `/api/audits/{id}` | 删除审计记录（不影响复核标记） |
 | POST | `/api/reviews` | **创建复核标记**（按审计中的冲突条目，跨审计生效） |
 | GET | `/api/reviews?state=active&fingerprint=…` | 复核标记记录列表（可按状态/指纹筛选） |
@@ -294,9 +302,52 @@ curl http://localhost:8000/api/reviews/1                          # 单条记录
 curl -X POST http://localhost:8000/api/reviews/1/revoke           # 撤销（保留记录，条目回到待复核）
 ```
 
-网页端在第 4 节每条冲突卡片上直接展示「待复核 / 已复核」徽标：待复核条目可填写
+网页端在第 5 节每条冲突卡片上直接展示「待复核 / 已复核」徽标：待复核条目可填写
 复核备注与失效时间后一键打标，已复核条目显示备注、失效时间并提供「撤销标记」按钮，
 操作后列表自动刷新。删除审计记录不会删除复核标记（标记按指纹跨审计生效）。
+
+### 根包退役预演接口
+
+根包 = 依赖图中**没有入边**的包（没有任何其他包依赖它）。预演接口从根包集合中
+移除选定根包，沿 使用方 → 被依赖方 的边从剩余根包重算可达集合：
+
+```bash
+# 不带参数：仅返回该审计的根包列表（rehearsed=false，含每个根包的可达包数量）
+curl http://localhost:8000/api/audits/1/retire
+
+# 预演退役一个或多个根包（重复 retire 参数，也支持逗号分隔）
+curl "http://localhost:8000/api/audits/1/retire?retire=admin-cli@1.4.0"
+curl "http://localhost:8000/api/audits/1/retire?retire=admin-cli@1.4.0&retire=web-app@2.1.0"
+```
+
+返回内容（`rehearsed=true` 时）：
+
+- `roots` —— 全部根包（含各自可达包数量 `reachable` 与本次是否被退役 `retired`）；
+- `summary` —— 退役前/后可达包数（`reachable_before` / `reachable_after`）、
+  失联包数、共用包数、消失冲突数（含其中硬冲突数）；
+- `lost` —— 因退役失去可达性的包（`retired_root=true` 为被退役的根包本身，
+  其余为仅经退役根包可达的下游包）；
+- `shared` —— 退役根包原本可达、但仍被其他剩余根包共用的包
+  （`reached_by` 列出这些剩余根包）；
+- `disappearing_conflicts` —— 退役后祖先不再能沿依赖边约束到被依赖方的
+  许可证冲突/告警，每条附原审计的最短依赖路径 `path` 与 `distance`。
+
+预演是**只读**操作，不会创建审计或改动复核标记；原生 manifest 与 CycloneDX
+审计结果均可直接使用。错误情形均返回明确信息：
+
+```bash
+$ curl -i "http://localhost:8000/api/audits/999/retire?retire=app@1"
+HTTP/1.1 404 Not Found
+{"detail":"审计记录不存在：999。退役预演为只读操作，不会创建新审计。"}
+
+$ curl -i "http://localhost:8000/api/audits/1/retire?retire=crypto-lib@1.1.0"
+HTTP/1.1 422 Unprocessable Entity
+{"detail":"以下包不是根包（仍被其他包依赖，存在入边）：crypto-lib@1.1.0。根包定义为没有入边的包，请改选根包。"}
+```
+
+重复选择同一根包（`422`「重复选择退役根包」）、选择审计中不存在的包、
+以及退役全部根包（`422`「不能退役全部根包」）同样返回明确错误。
+网页端在第 3 节选择审计后勾选根包即可预演，可反复调整勾选重新预演。
 
 ## 审计结果结构（节选）
 
@@ -305,7 +356,7 @@ curl -X POST http://localhost:8000/api/reviews/1/revoke           # 撤销（保
   "audit_id": 1,
   "manifest_name": "billing-platform-demo",
   "status": "conflict",
-  "summary": { "packages": 13, "edges": 15, "conflicts": 4, "license_warnings": 3, "unresolved": 1 },
+  "summary": { "packages": 15, "edges": 15, "conflicts": 9, "license_warnings": 4, "unresolved": 1 },
   "nodes": [
     { "id": "pdf-export@4.0.0", "name": "pdf-export", "version": "4.0.0",
       "license_display": "Apache 2.0", "license": "Apache-2.0",
@@ -359,13 +410,14 @@ CycloneDX 导入的审计结果结构相同，另带 `"source_format": "cycloned
 │   ├── analyzer.py    # manifest 解析、节点规范化、传递约束、最短路径（自动路由 CycloneDX）
 │   ├── cyclonedx.py   # CycloneDX JSON 导入：bom-ref 映射节点、ref/dependsOn 还原依赖边
 │   ├── compare.py     # 两次审计对比：节点/冲突配对与变化检测（纯只读）
+│   ├── retire.py      # 根包退役预演：从剩余根包重算可达集合（纯只读）
 │   ├── reviews.py     # 复核标记：指纹计算、失效时间规范化、审计结果附着
 │   ├── licenses.py    # 许可证别名规范化与兼容矩阵
 │   └── database.py    # SQLite 初始化与审计记录/复核标记持久化
 ├── static/
 │   ├── index.html     # 单文件网页（无外部 CDN 依赖）
 │   └── examples/      # sample-manifest.json 与 sample-cyclonedx.json 两个内置示例
-├── tests/             # 轻量自测：python -m tests.test_analyzer / test_compare / test_reviews / test_cyclonedx
+├── tests/             # 轻量自测：python -m tests.test_analyzer / test_compare / test_reviews / test_cyclonedx / test_retire
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt

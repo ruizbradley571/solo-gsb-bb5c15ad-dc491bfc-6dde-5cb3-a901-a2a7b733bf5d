@@ -163,10 +163,28 @@
     <div id="compare-result" class="hidden-block" style="margin-top:18px;"></div>
   </section>
 
+  <section class="card">
+    <h2>3. 根包退役预演 <span class="pill">只读 · 不创建审计</span></h2>
+    <div id="retire-alert" class="alert"></div>
+    <div class="row">
+      <select id="retire-audit"></select>
+      <button class="secondary" id="btn-load-roots">加载根包</button>
+      <button id="btn-rehearse" disabled>预演退役</button>
+    </div>
+    <div class="hint" style="margin-top:8px;">
+      根包 = <b>没有入边的包</b>（没有任何其他包依赖它）。选择一条已保存的审计并勾选一个或多个根包后，
+      服务端沿 使用方 → 被依赖方 的边从剩余根包重算可达集合，展示因退役失去可达性的包、
+      仍被其他根包共用的包，以及随失联包消失的许可证冲突与原最短路径。
+      预演为只读操作，可反复调整勾选重新预演，不会创建审计或改动复核标记。
+    </div>
+    <div id="retire-roots" style="margin-top:12px;"></div>
+    <div id="retire-result" class="hidden-block" style="margin-top:18px;"></div>
+  </section>
+
   <section id="result" class="hidden-block">
     <div class="card">
       <div class="row" style="justify-content:space-between;">
-        <h2 style="margin:0;">3. 审计结果 <span id="r-name" class="muted" style="font-weight:400;font-size:13px;"></span></h2>
+        <h2 style="margin:0;">4. 审计结果 <span id="r-name" class="muted" style="font-weight:400;font-size:13px;"></span></h2>
         <span id="r-status"></span>
       </div>
       <div class="stats" style="margin-top:14px;">
@@ -187,7 +205,7 @@
     </div>
 
     <div class="card">
-      <h2>4. 冲突与最短依赖路径 <span id="review-stats" class="pill" style="font-weight:400;"></span></h2>
+      <h2>5. 冲突与最短依赖路径 <span id="review-stats" class="pill" style="font-weight:400;"></span></h2>
       <div id="review-alert" class="alert"></div>
       <div class="hint" style="margin-bottom:10px;">
         复核标记按「祖先节点 + 被依赖节点 + 双方规范化许可证」生成指纹，跨审计生效：
@@ -197,7 +215,7 @@
     </div>
 
     <div class="card">
-      <h2>5. 节点与传递约束</h2>
+      <h2>6. 节点与传递约束</h2>
       <div style="overflow-x:auto;">
       <table id="nodes-table">
         <thead><tr><th>节点</th><th>版本</th><th>许可证</th><th>约束来源（传递）</th><th>硬冲突</th></tr></thead>
@@ -207,7 +225,7 @@
     </div>
 
     <div class="card">
-      <h2>6. 告警与未解析依赖</h2>
+      <h2>7. 告警与未解析依赖</h2>
       <div id="warnings"></div>
     </div>
   </section>
@@ -502,7 +520,7 @@ async function loadAuditList() {
     showCompareAlert(e.message);
     return [];
   }
-  const prev = { base: $("cmp-base").value, target: $("cmp-target").value };
+  const prev = { base: $("cmp-base").value, target: $("cmp-target").value, retire: $("retire-audit").value };
   const fill = (sel, selected) => {
     sel.innerHTML = "";
     const placeholder = document.createElement("option");
@@ -519,8 +537,17 @@ async function loadAuditList() {
   };
   fill($("cmp-base"), prev.base);
   fill($("cmp-target"), prev.target || (items.length > 1 ? String(items[1].id) : ""));
+  fill($("retire-audit"), prev.retire || (items.length ? String(items[0].id) : ""));
   // 首次加载默认选最新两条（列表为倒序：items[0] 最新）
   if (!prev.base && items.length) $("cmp-base").value = String(items[0].id);
+  // 退役预演的根包列表随审计选择联动加载
+  if ($("retire-audit").value) {
+    await loadRetireRoots();
+  } else {
+    $("retire-roots").innerHTML = "";
+    $("retire-result").className = "hidden-block";
+    $("btn-rehearse").disabled = true;
+  }
   return items;
 }
 
@@ -658,6 +685,157 @@ $("btn-compare").addEventListener("click", async () => {
 });
 
 $("btn-refresh-audits").addEventListener("click", loadAuditList);
+
+// --- 根包退役预演 -----------------------------------------------------------
+
+let retireNodeMap = {};  // 节点 id -> 节点（渲染原最短路径时标注许可证）
+
+function showRetireAlert(msg) {
+  const el = $("retire-alert");
+  el.textContent = msg;
+  el.className = "alert error show";
+}
+function clearRetireAlert() { $("retire-alert").className = "alert"; }
+
+async function loadRetireRoots() {
+  clearRetireAlert();
+  const aid = $("retire-audit").value;
+  $("retire-result").className = "hidden-block";
+  $("retire-result").innerHTML = "";
+  if (!aid) {
+    $("retire-roots").innerHTML = "";
+    $("btn-rehearse").disabled = true;
+    return;
+  }
+  let rootsData, auditData;
+  try {
+    // 并行拉取根包列表（预览模式）与完整审计（供路径渲染节点许可证）
+    const [rootsResp, auditResp] = await Promise.all([
+      fetch("/api/audits/" + aid + "/retire"),
+      fetch("/api/audits/" + aid),
+    ]);
+    rootsData = await rootsResp.json();
+    auditData = await auditResp.json();
+    if (!rootsResp.ok) throw new Error(typeof rootsData.detail === "string" ? rootsData.detail : JSON.stringify(rootsData.detail));
+    if (!auditResp.ok) throw new Error(typeof auditData.detail === "string" ? auditData.detail : JSON.stringify(auditData.detail));
+  } catch (e) {
+    showRetireAlert("加载根包失败：" + e.message);
+    return;
+  }
+  retireNodeMap = {};
+  (auditData.nodes || []).forEach((n) => { retireNodeMap[n.id] = n; });
+  renderRetireRoots(rootsData);
+}
+
+function renderRetireRoots(data) {
+  const box = $("retire-roots");
+  if (!data.roots || !data.roots.length) {
+    box.innerHTML = '<p class="muted">该审计没有根包（所有包都存在入边，可能构成依赖环），无法做退役预演。</p>';
+    $("btn-rehearse").disabled = true;
+    return;
+  }
+  box.innerHTML = '<div class="hint" style="margin-bottom:8px;">共 ' + data.roots.length +
+    " 个根包，勾选要模拟退役的根包（至少保留一个，不可全选）：</div>" +
+    data.roots.map((r) =>
+      '<label style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:7px;padding:6px 10px;margin:0 8px 8px 0;cursor:pointer;background:#fcfdff;">' +
+      '<input type="checkbox" class="retire-check" value="' + esc(r.id) + '">' +
+      '<span class="mono"><b>' + esc(r.id) + "</b></span>" +
+      '<span class="badge ' + catClass(r.license_category) + '">' + esc(r.license_display) + "</span>" +
+      '<span class="pill">可达 ' + r.reachable + " 包</span>" +
+      "</label>"
+    ).join("");
+  $("btn-rehearse").disabled = false;
+}
+
+function renderRetirePath(path) {
+  return '<div class="path">' + path.map((nid) => {
+    const node = retireNodeMap[nid];
+    const lic = node ? node.license_display : "";
+    return esc(nid) + (lic ? ' <span class="muted">[' + esc(lic) + "]</span>" : "");
+  }).join('<span class="arrow">→</span>') + "</div>";
+}
+
+function renderRetireResult(data) {
+  const s = data.summary;
+  let html = '<div class="meta-line">模拟退役 <span class="mono"><b>' + data.retired.map(esc).join("、") + "</b></span>" +
+    '<span class="diff-arrow">→</span>剩余根包 <b>' + s.remaining_roots + "</b> / " + s.roots + " 个</div>";
+  html += '<div class="stats">' +
+    '<div class="stat"><div class="num">' + s.reachable_before + '<span class="diff-arrow">→</span>' + s.reachable_after + "</div><div class='label'>可达包（退役前 → 后）</div></div>" +
+    '<div class="stat"><div class="num diff-remove">' + s.lost + "</div><div class='label'>失去可达性的包</div></div>" +
+    '<div class="stat"><div class="num">' + s.shared + "</div><div class='label'>仍被其他根包共用的包</div></div>" +
+    '<div class="stat"><div class="num" style="color:var(--err)">' + s.disappearing_conflicts + "</div><div class='label'>消失的冲突/告警（硬冲突 " + s.disappearing_errors + "）</div></div>" +
+    "</div>";
+
+  html += '<h3 style="margin:16px 0 8px;font-size:14px;">🗑️ 因退役失去可达性的包 <span class="pill">' + s.lost + " 个</span></h3>";
+  if (data.lost.length) {
+    html += '<div style="overflow-x:auto;"><table><thead><tr><th>包</th><th>许可证</th><th>硬冲突</th><th>说明</th></tr></thead><tbody>' +
+      data.lost.map((n) =>
+        "<tr><td class='mono'>" + esc(n.id) + "</td>" +
+        "<td><span class='badge " + catClass(n.license_category) + "'>" + esc(n.license_display) + "</span></td>" +
+        "<td>" + (n.conflict_count ? "<b style='color:var(--err)'>" + n.conflict_count + "</b>" : "0") + "</td>" +
+        "<td>" + (n.retired_root ? '<span class="badge conflict">被退役的根包</span>' : '<span class="muted">仅经退役根包可达</span>') + "</td></tr>"
+      ).join("") + "</tbody></table></div>";
+  } else {
+    html += '<p class="muted">没有包因这次退役失去可达性。</p>';
+  }
+
+  html += '<h3 style="margin:16px 0 8px;font-size:14px;">🤝 仍被其他根包共用的包 <span class="pill">' + s.shared + " 个</span></h3>";
+  if (data.shared.length) {
+    html += '<div style="overflow-x:auto;"><table><thead><tr><th>包</th><th>许可证</th><th>仍可达它的剩余根包</th></tr></thead><tbody>' +
+      data.shared.map((n) =>
+        "<tr><td class='mono'>" + esc(n.id) + "</td>" +
+        "<td><span class='badge " + catClass(n.license_category) + "'>" + esc(n.license_display) + "</span></td>" +
+        "<td class='mono'>" + n.reached_by.map(esc).join("、") + "</td></tr>"
+      ).join("") + "</tbody></table></div>";
+  } else {
+    html += '<p class="muted">退役根包可达的包没有与其他根包共用。</p>';
+  }
+
+  html += '<h3 style="margin:16px 0 8px;font-size:14px;">🔥 随失联包消失的许可证冲突 <span class="pill">' + s.disappearing_conflicts + " 条</span></h3>";
+  if (data.disappearing_conflicts.length) {
+    html += data.disappearing_conflicts.map((c) =>
+      '<div class="conflict ' + (c.severity === "error" ? "error" : "warning") + '">' +
+      '<div class="head"><span class="badge ' + (c.severity === "error" ? "conflict" : "warning") + '">' +
+      (c.severity === "error" ? "硬冲突" : "需人工确认") + "</span>" +
+      '<span class="mono"><b>' + esc(c.ancestor) + "</b> ── " + esc(c.ancestor_license) + " → " + esc(c.node_license) + " ── <b>" + esc(c.node) + "</b></span>" +
+      '<span class="pill">原最短路径 ' + c.distance + " 跳 · " + esc(c.id) + "</span></div>" +
+      '<div class="reason">' + esc(c.reason) + "</div>" +
+      renderRetirePath(c.path) +
+      "</div>"
+    ).join("");
+  } else {
+    html += '<p class="muted">没有许可证冲突随这次退役消失。</p>';
+  }
+
+  const box = $("retire-result");
+  box.innerHTML = html;
+  box.className = "";
+}
+
+$("btn-load-roots").addEventListener("click", loadRetireRoots);
+$("retire-audit").addEventListener("change", loadRetireRoots);
+$("btn-rehearse").addEventListener("click", async () => {
+  clearRetireAlert();
+  const aid = $("retire-audit").value;
+  if (!aid) { showRetireAlert("请先选择一条审计记录。"); return; }
+  const checked = Array.from(document.querySelectorAll(".retire-check:checked")).map((c) => c.value);
+  if (!checked.length) { showRetireAlert("请至少勾选一个要模拟退役的根包。"); return; }
+  const params = checked.map((id) => "retire=" + encodeURIComponent(id)).join("&");
+  $("btn-rehearse").disabled = true;
+  try {
+    const resp = await fetch("/api/audits/" + aid + "/retire?" + params);
+    const data = await resp.json();
+    if (!resp.ok) {
+      showRetireAlert(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+      return;
+    }
+    renderRetireResult(data);
+  } catch (e) {
+    showRetireAlert("预演请求失败：" + e.message);
+  } finally {
+    $("btn-rehearse").disabled = false;
+  }
+});
 
 // 自动载入示例，便于首次访问
 $("btn-sample").click();

@@ -50,6 +50,20 @@
       "bom-ref": "pkg:maven/legacy-util@1.0.0",
       "name": "legacy-util",
       "version": "1.0.0"
+    },
+    {
+      "type": "application",
+      "bom-ref": "pkg:app/batch-worker@2.0.0",
+      "name": "batch-worker",
+      "version": "2.0.0",
+      "licenses": [ { "license": { "id": "GPL-2.0" } } ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/report-engine@1.1.0",
+      "name": "report-engine",
+      "version": "1.1.0",
+      "licenses": [ { "license": { "id": "Proprietary" } } ]
     }
   ],
   "dependencies": [
@@ -59,6 +73,13 @@
         "pkg:npm/web-ui@1.4.2",
         "pkg:npm/pdf-kit@2.0.1",
         "pkg:pypi/codec-native@0.8.0"
+      ]
+    },
+    {
+      "ref": "pkg:app/batch-worker@2.0.0",
+      "dependsOn": [
+        "pkg:pypi/codec-native@0.8.0",
+        "pkg:npm/report-engine@1.1.0"
       ]
     },
     {
